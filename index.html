@@ -168,7 +168,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       </div>
       <div class="chips">
         <span class="chip" id="fileOut">00_05.gcode</span>
-        <span class="chip">Pattern safely inside 350 × 350 mm bed</span>
+        <span class="chip">Checked against X309.0 × Y331.0 movement limits</span>
         <span class="chip">No retract/travel between rows</span>
       </div>
       <p class="mini" id="summary">Bottom row is K20; top row is K50. Judge only the long horizontal slow → fast → slow sections, ignoring the vertical connectors.</p>
@@ -199,8 +199,10 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     filamentDia:'1.75', flow:'100', fanPercent:'0', levelBed:true, overrideESteps:false, eSteps:'409',
     forceMotion:false, accel:'800', jerk:'6', chosenK:'35'
   };
-  const BED = {x:350, y:350};
-  const P = {x0:20, x1:65, x2:245, x3:290, y0:15, maxY:315, minPitch:3, z:0.20};
+  // Configured printer movement limits supplied by the user.
+  const BED = {x:309.0, y:331.0};
+  const EDGE_MARGIN = 15.0;
+  const P = {x0:20, x1:65, x2:245, x3:290, y0:15, maxY:BED.y - EDGE_MARGIN, minPitch:3, z:0.20};
   let current = null;
 
   const formatNumber = n => {
@@ -253,7 +255,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     const values = buildValues(minK, maxK, step);
     const available = P.maxY - P.y0;
     const pitch = values.length > 1 ? Math.min(10, available / (values.length - 1)) : 0;
-    if (values.length > 1 && pitch < P.minPitch - 1e-8) throw new Error(`This creates ${values.length} rows; increase the K step so rows fit safely on the bed.`);
+    if (values.length > 1 && pitch < P.minPitch - 1e-8) throw new Error(`This creates ${values.length} rows; increase the K step so rows fit safely within the configured Y travel limit.`);
     const nozzle = value('nozzle', 'nozzle temperature');
     const bed = value('bed', 'bed temperature');
     const slow = value('slow', 'slow speed'), fast = value('fast', 'fast speed');
@@ -316,7 +318,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       `; Line ${formatNumber(c.lineWidth)}mm x ${formatNumber(c.layerHeight)}mm / Flow ${formatNumber(c.flow)}% / Filament ${formatNumber(c.filamentDia)}mm`,
       `; Part cooling fan: ${formatNumber(c.fanPercent)}% (M106 S${c.fanPwm})`,
       `; Maximum nominal volumetric flow: ${c.maxFlow.toFixed(2)} mm^3/s`,
-      `; Pattern X${P.x0}-${P.x3}; safe inside ${BED.x} x ${BED.y} mm bed`,
+      `; Configured XY movement limits: X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)} mm`,
+      `; Pattern X${P.x0.toFixed(1)}-${P.x3.toFixed(1)} / Y${P.y0.toFixed(1)}-${(P.y0 + (c.values.length - 1) * c.pitch).toFixed(1)} mm`,
       ';');
     add('; Row guide:');
     c.values.forEach((k, i) => add(`; Row ${String(i + 1).padStart(3,'0')}  Y${(P.y0 + i * c.pitch).toFixed(2)}  K${formatNumber(k)}`));
@@ -387,10 +390,43 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       'M84 X Y E ;Disable X/Y/E steppers; keep Z held',
       '; End of file');
     const body = lines.join('\n') + '\n';
+    const bounds = validateXYBounds(body);
     const minutes = estimateMotionMinutes(body);
     const filamentMm = estimateExtrudedFilament(body);
-    const prefix = `; Estimated movement/dwell time: ${minutes.toFixed(2)} minutes. Heating, homing and G29 time excluded.\n; Approximate positive filament extrusion: ${filamentMm.toFixed(1)} mm.\n`;
-    return {text: prefix + body, minutes, filamentMm};
+    const prefix = `; Estimated movement/dwell time: ${minutes.toFixed(2)} minutes. Heating, homing and G29 time excluded.\n; Approximate positive filament extrusion: ${filamentMm.toFixed(1)} mm.\n; XY bounds checked: X${bounds.minX.toFixed(2)}-${bounds.maxX.toFixed(2)} / Y${bounds.minY.toFixed(2)}-${bounds.maxY.toFixed(2)} mm within X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)}.\n`;
+    return {text: prefix + body, minutes, filamentMm, bounds};
+  }
+  function validateXYBounds(text) {
+    let x = 0, y = 0, absXYZ = true;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.split(';')[0].trim().toUpperCase();
+      if (!line) continue;
+      if (/^G90\b/.test(line)) { absXYZ = true; continue; }
+      if (/^G91\b/.test(line)) { absXYZ = false; continue; }
+      if (/^G92\b/.test(line)) {
+        const xm = line.match(/\bX\s*(-?\d+(?:\.\d+)?)/);
+        const ym = line.match(/\bY\s*(-?\d+(?:\.\d+)?)/);
+        if (xm) x = Number(xm[1]);
+        if (ym) y = Number(ym[1]);
+        continue;
+      }
+      if (!/^G0?\b/.test(line) && !/^G1\b/.test(line)) continue;
+      const vals = {};
+      for (const m of line.matchAll(/([XY])\s*(-?\d+(?:\.\d+)?)/g)) vals[m[1]] = Number(m[2]);
+      const nx = ('X' in vals) ? (absXYZ ? vals.X : x + vals.X) : x;
+      const ny = ('Y' in vals) ? (absXYZ ? vals.Y : y + vals.Y) : y;
+      if ('X' in vals || 'Y' in vals) {
+        minX = Math.min(minX, nx); maxX = Math.max(maxX, nx);
+        minY = Math.min(minY, ny); maxY = Math.max(maxY, ny);
+        if (nx < -1e-8 || nx > BED.x + 1e-8 || ny < -1e-8 || ny > BED.y + 1e-8) {
+          throw new Error(`Generated move X${nx.toFixed(2)} Y${ny.toFixed(2)} is outside configured limits X0-${BED.x.toFixed(1)}, Y0-${BED.y.toFixed(1)}.`);
+        }
+      }
+      x = nx; y = ny;
+    }
+    if (!Number.isFinite(minX)) return {minX:0, maxX:0, minY:0, maxY:0};
+    return {minX, maxX, minY, maxY};
   }
   function estimateMotionMinutes(text) {
     let x=0, y=0, z=0, e=0, absXYZ=true, absE=false, feed=null, seconds=0;
@@ -553,7 +589,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
   $('reset').addEventListener('click', () => { resetDefaults(); refresh(); });
   $('copyApply').addEventListener('click', () => { const cmd = selectedCommand(); if (cmd) copyText(cmd, $('copyApply'), 'Copy'); });
   load(); refresh();
-  window.LATestGenerator = {readConfig, generate, estimateMotionMinutes, estimateExtrudedFilament, filename, refresh};
+  window.LATestGenerator = {readConfig, generate, validateXYBounds, estimateMotionMinutes, estimateExtrudedFilament, filename, refresh};
 })();
 </script>
 </body>
