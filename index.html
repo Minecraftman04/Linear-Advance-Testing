@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Older Marlin Linear Advance G-code Generator — Fan PWM Edition</title>
+<title>Older Marlin Linear Advance G-code Generator — Adjustable XY Limits &amp; Fan PWM</title>
 <style>
 :root{
   --bg:#0b1016; --panel:#121a23; --panel2:#192431; --line:#263547;
@@ -88,7 +88,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
 <body>
 <div class="wrap">
   <h1>Older Marlin Linear Advance Test Generator</h1>
-  <p class="sub">Safe revised edition for your Ender 5 Plus / Hemera PETG line test. It produces a continuous slow → fast → slow snake pattern, supports your older large-value K scale, and avoids overriding saved E-steps unless you deliberately enable it.</p>
+  <p class="sub">Safe revised edition for your Ender 5 Plus / Hemera PETG line test. It produces a continuous slow → fast → slow snake pattern, supports your older large-value K scale, allows a smaller bounded XY test area, and avoids overriding saved E-steps unless you deliberately enable it.</p>
   <div class="grid">
     <section class="card">
       <h2>K range</h2>
@@ -113,6 +113,14 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
         </div>
       </div>
       <p class="hint">Keep <strong>Older Marlin</strong> selected while your printer reports <code>E/D=Auto</code> and you are testing values such as K20–K50.</p>
+      <details open>
+        <summary>Generated movement area</summary>
+        <div class="advanced">
+          <div><label for="maxTravelX">Maximum used X mm</label><input id="maxTravelX" type="number" value="290" step="0.1" min="140" max="309"></div>
+          <div><label for="maxTravelY">Maximum used Y mm</label><input id="maxTravelY" type="number" value="316" step="0.1" min="60" max="331"></div>
+        </div>
+        <p class="hint">All generated purge and test moves are kept inside this area. Minimums are <strong>X140 mm</strong> and <strong>Y60 mm</strong>: this preserves at least an 80 mm fast section and sufficient space for differing K rows. Hard printer limits remain X309.0 / Y331.0.</p>
+      </details>
       <div id="error" role="alert"></div>
       <ul id="warnings" aria-live="polite"></ul>
       <button id="download" class="primary">Download generated G-code</button>
@@ -168,7 +176,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       </div>
       <div class="chips">
         <span class="chip" id="fileOut">00_05.gcode</span>
-        <span class="chip">Checked against X309.0 × Y331.0 movement limits</span>
+        <span class="chip" id="limitChip">Generated moves limited within X290.0 × Y316.0</span>
         <span class="chip">No retract/travel between rows</span>
       </div>
       <p class="mini" id="summary">Bottom row is K20; top row is K50. Judge only the long horizontal slow → fast → slow sections, ignoring the vertical connectors.</p>
@@ -192,17 +200,25 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const fields = ['minK','maxK','stepMode','manualStep','compatibility','nozzle','bed','slow','fast','lineWidth','layerHeight','filamentDia','flow','fanPercent','levelBed','overrideESteps','eSteps','forceMotion','accel','jerk','chosenK'];
+  const fields = ['minK','maxK','stepMode','manualStep','compatibility','maxTravelX','maxTravelY','nozzle','bed','slow','fast','lineWidth','layerHeight','filamentDia','flow','fanPercent','levelBed','overrideESteps','eSteps','forceMotion','accel','jerk','chosenK'];
   const defaults = {
-    minK:'20', maxK:'50', stepMode:'auto', manualStep:'1', compatibility:'legacy',
+    minK:'20', maxK:'50', stepMode:'auto', manualStep:'1', compatibility:'legacy', maxTravelX:'290', maxTravelY:'316',
     nozzle:'245', bed:'85', slow:'15', fast:'60', lineWidth:'0.55', layerHeight:'0.20',
     filamentDia:'1.75', flow:'100', fanPercent:'0', levelBed:true, overrideESteps:false, eSteps:'409',
     forceMotion:false, accel:'800', jerk:'6', chosenK:'35'
   };
-  // Configured printer movement limits supplied by the user.
+  // Configured printer movement limits supplied by the user. These hard limits cannot be exceeded.
   const BED = {x:309.0, y:331.0};
-  const EDGE_MARGIN = 15.0;
-  const P = {x0:20, x1:65, x2:245, x3:290, y0:15, maxY:BED.y - EDGE_MARGIN, minPitch:3, z:0.20};
+  const MIN_AREA = {maxX:140.0, maxY:60.0};
+  const BASE = {x0:20.0, y0:15.0, minPitch:3.0, z:0.20};
+  function makeGeometry(maxX, maxY) {
+    const span = maxX - BASE.x0;
+    return {
+      x0:BASE.x0, x1:BASE.x0 + span / 6, x2:BASE.x0 + span * 5 / 6, x3:maxX,
+      y0:BASE.y0, maxY, minPitch:BASE.minPitch, z:BASE.z,
+      purgeX0:0.0, purgeX1:1.0, purgeY0:20.0, purgeY1:Math.min(140.0, maxY - 5.0)
+    };
+  }
   let current = null;
 
   const formatNumber = n => {
@@ -221,7 +237,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     const options = [0.001,0.002,0.0025,0.005,0.01,0.02,0.025,0.05,0.1,0.2,0.25,0.5,1,2,2.5,5,10,20,25,50,100,200,250,500];
     return options.find(v => v >= raw - 1e-10) || Math.ceil(raw / 500) * 500;
   }
-  function autoStep(minK, maxK) {
+  function autoStep(minK, maxK, g) {
     const range = maxK - minK;
     let preferred;
     if (range <= 1) preferred = 0.01;
@@ -232,7 +248,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     else if (range <= 40) preferred = 1;
     else if (range <= 100) preferred = 2;
     else preferred = niceStepAtLeast(range / 40);
-    const maximumRows = Math.floor((P.maxY - P.y0) / P.minPitch) + 1;
+    const maximumRows = Math.floor((g.maxY - g.y0) / g.minPitch) + 1;
     return Math.max(preferred, niceStepAtLeast(range / (maximumRows - 1)));
   }
   function buildValues(minK, maxK, step) {
@@ -249,13 +265,19 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     const minK = value('minK', 'minimum K'), maxK = value('maxK', 'maximum K');
     if (minK < 0 || maxK < 0) throw new Error('K values must not be negative.');
     if (maxK <= minK) throw new Error('Maximum K must be greater than minimum K.');
+    const maxTravelX = value('maxTravelX', 'maximum used X');
+    const maxTravelY = value('maxTravelY', 'maximum used Y');
+    if (maxTravelX < MIN_AREA.maxX) throw new Error(`Maximum used X must be at least ${MIN_AREA.maxX.toFixed(1)} mm so the speed change has a usable test length.`);
+    if (maxTravelY < MIN_AREA.maxY) throw new Error(`Maximum used Y must be at least ${MIN_AREA.maxY.toFixed(1)} mm so multiple K rows can be compared.`);
+    if (maxTravelX > BED.x || maxTravelY > BED.y) throw new Error(`Selected movement area must stay within X0-${BED.x.toFixed(1)} and Y0-${BED.y.toFixed(1)} mm.`);
+    const geom = makeGeometry(maxTravelX, maxTravelY);
     const manual = $('stepMode').value === 'manual';
-    const step = manual ? value('manualStep', 'manual step') : autoStep(minK, maxK);
+    const step = manual ? value('manualStep', 'manual step') : autoStep(minK, maxK, geom);
     if (step <= 0) throw new Error('Step size must be greater than zero.');
     const values = buildValues(minK, maxK, step);
-    const available = P.maxY - P.y0;
+    const available = geom.maxY - geom.y0;
     const pitch = values.length > 1 ? Math.min(10, available / (values.length - 1)) : 0;
-    if (values.length > 1 && pitch < P.minPitch - 1e-8) throw new Error(`This creates ${values.length} rows; increase the K step so rows fit safely within the configured Y travel limit.`);
+    if (values.length > 1 && pitch < geom.minPitch - 1e-8) throw new Error(`This creates ${values.length} rows; increase the K step or the maximum used Y so rows remain at least ${geom.minPitch.toFixed(1)} mm apart.`);
     const nozzle = value('nozzle', 'nozzle temperature');
     const bed = value('bed', 'bed temperature');
     const slow = value('slow', 'slow speed'), fast = value('fast', 'fast speed');
@@ -279,7 +301,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     const ePerMm = lineArea / filamentArea;
     const maxFlow = lineArea * fast;
     const fanPwm = Math.round(fanPercent * 255 / 100);
-    return {minK,maxK,step,manual,values,pitch,nozzle,bed,slow,fast,lineWidth,layerHeight,filamentDia,flow,fanPercent,fanPwm,
+    return {minK,maxK,maxTravelX,maxTravelY,geom,step,manual,values,pitch,nozzle,bed,slow,fast,lineWidth,layerHeight,filamentDia,flow,fanPercent,fanPwm,
       lineArea,filamentArea,ePerMm,maxFlow,levelBed:$('levelBed').checked,overrideESteps,eSteps,forceMotion,accel,jerk,
       compatibility:$('compatibility').value};
   }
@@ -291,6 +313,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     if (c.nozzle > 270) out.push('The selected nozzle temperature is unusually high for PETG; verify the filament and firmware temperature limits.');
     if (c.bed > 100) out.push('The selected bed temperature is unusually high for PETG/glass; verify your build surface limits.');
     if (c.fanPercent > 50) out.push('High part cooling can reduce PETG layer bonding; use it only if needed for this line test.');
+    if (c.maxTravelX > BED.x - 5) out.push('Maximum used X is very close to the configured X limit; leave a small margin unless you have already verified this travel.');
+    if (c.maxTravelY > BED.y - 5) out.push('Maximum used Y is very close to the configured Y limit; leave a small margin unless you have already verified this travel.');
     if (c.overrideESteps) out.push(`This G-code will temporarily command M92 E${formatNumber(c.eSteps)}.`);
     if (c.forceMotion) out.push('M204/M205 overrides remain active after this test until changed, power-cycled, or settings are reloaded.');
     const lastIncrement = c.values.length > 1 ? round6(c.values[c.values.length-1] - c.values[c.values.length-2]) : c.step;
@@ -299,6 +323,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
   }
   function ext(c, distance) { return distance * c.ePerMm; }
   function generate(c) {
+    const g = c.geom;
     const fSlow = c.slow * 60, fFast = c.fast * 60, fTravel = 5000;
     const lines = [], add = (...parts) => lines.push(...parts);
     add('; ======================================================================',
@@ -309,8 +334,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       '; PRINT DIRECTLY - DO NOT SLICE THIS FILE.',
       '; One continuous extruded snake line; no retract/travel between test rows.',
       '; M400 precedes every M900 K change.',
-      `; Bottom row Y${P.y0.toFixed(2)} = K${formatNumber(c.values[0])}.`,
-      `; Top row Y${(P.y0 + (c.values.length - 1) * c.pitch).toFixed(2)} = K${formatNumber(c.values[c.values.length - 1])}.`,
+      `; Bottom row Y${g.y0.toFixed(2)} = K${formatNumber(c.values[0])}.`,
+      `; Top row Y${(g.y0 + (c.values.length - 1) * c.pitch).toFixed(2)} = K${formatNumber(c.values[c.values.length - 1])}.`,
       '; Judge only long horizontal slow-fast-slow sections; ignore connectors.',
       '; Stop immediately if the extruder clicks, skips, or the nozzle scrapes.',
       ';',
@@ -319,10 +344,11 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       `; Part cooling fan: ${formatNumber(c.fanPercent)}% (M106 S${c.fanPwm})`,
       `; Maximum nominal volumetric flow: ${c.maxFlow.toFixed(2)} mm^3/s`,
       `; Configured XY movement limits: X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)} mm`,
-      `; Pattern X${P.x0.toFixed(1)}-${P.x3.toFixed(1)} / Y${P.y0.toFixed(1)}-${(P.y0 + (c.values.length - 1) * c.pitch).toFixed(1)} mm`,
+      `; Selected maximum generated XY: X${c.maxTravelX.toFixed(1)} / Y${c.maxTravelY.toFixed(1)} mm`,
+      `; Pattern actually used: X${g.x0.toFixed(1)}-${g.x3.toFixed(1)} / Y${g.y0.toFixed(1)}-${(g.y0 + (c.values.length - 1) * c.pitch).toFixed(1)} mm`,
       ';');
     add('; Row guide:');
-    c.values.forEach((k, i) => add(`; Row ${String(i + 1).padStart(3,'0')}  Y${(P.y0 + i * c.pitch).toFixed(2)}  K${formatNumber(k)}`));
+    c.values.forEach((k, i) => add(`; Row ${String(i + 1).padStart(3,'0')}  Y${(g.y0 + i * c.pitch).toFixed(2)}  K${formatNumber(k)}`));
     add('', '; --- Start G-code ---',
       'M220 S100 ;Reset feedrate percentage',
       'M221 S100 ;Reset flow percentage',
@@ -337,7 +363,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     else add('; G29 disabled in generator settings');
     add('G1 Z10 F3000 ;Lift before moving to purge corner',
       'G1 X0 Y0 F5000 ;Go to purge corner',
-      `G1 Z${P.z.toFixed(2)} F1200 ;Purge height`,
+      `G1 Z${g.z.toFixed(2)} F1200 ;Purge height`,
       `M109 S${formatNumber(c.nozzle)} ;Heat nozzle and wait`,
       `M106 S${c.fanPwm} ;Part cooling fan ${formatNumber(c.fanPercent)}% (PWM 0-255)`,
       'G4 S2 ;Allow pressure, temperature, and fan to settle',
@@ -347,34 +373,34 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       'G1 E5.0 F300 ;Prime nozzle',
       'G1 E-0.6 F1800 ;Small retract before purge lines',
       'G1 E0.6 F1800 ;Undo retract',
-      'G1 X0 Y140 E10 F900 ;First purge line',
-      'G1 X1.0 Y140 F5000 ;Shift sideways',
-      'G1 X1.0 Y20 E10 F900 ;Second purge line',
+      `G1 X${g.purgeX0.toFixed(2)} Y${g.purgeY1.toFixed(2)} E10 F900 ;First purge line within selected Y maximum`,
+      `G1 X${g.purgeX1.toFixed(2)} Y${g.purgeY1.toFixed(2)} F5000 ;Shift sideways`,
+      `G1 X${g.purgeX1.toFixed(2)} Y${g.purgeY0.toFixed(2)} E10 F900 ;Second purge line`,
       'G1 E-0.6 F1800 ;Retract before test',
       'G92 E0',
       '', '; --- Continuous LA test pattern ---');
     if (c.forceMotion) add(`M204 P${formatNumber(c.accel)} ;User-enabled test print acceleration`, `M205 X${formatNumber(c.jerk)} Y${formatNumber(c.jerk)} ;User-enabled XY jerk`);
     else add('; M204/M205 not overridden; uses the printer current motion settings');
-    add(`G1 Z${P.z.toFixed(2)} F3000`,
-      `G1 X${P.x0.toFixed(2)} Y${P.y0.toFixed(2)} F${fTravel} ;Move to test start`,
+    add(`G1 Z${g.z.toFixed(2)} F3000`,
+      `G1 X${g.x0.toFixed(2)} Y${g.y0.toFixed(2)} F${fTravel} ;Move to test start`,
       'G1 E0.60 F1800 ;Undo pre-test retract',
       'G92 E0',
       '; Begin continuous extruded snake');
     c.values.forEach((k, i) => {
-      const y = P.y0 + i * c.pitch;
+      const y = g.y0 + i * c.pitch;
       add('', `; Row ${String(i + 1).padStart(3,'0')}: K${formatNumber(k)} at Y${y.toFixed(2)}`,
         'M400 ;Complete previous movement before changing K',
         `M900 K${formatNumber(k)}`);
       if (i % 2 === 0) {
-        add(`G1 X${P.x1.toFixed(2)} Y${y.toFixed(2)} E${ext(c, P.x1 - P.x0).toFixed(5)} F${fSlow} ;Slow lead-in`,
-            `G1 X${P.x2.toFixed(2)} Y${y.toFixed(2)} E${ext(c, P.x2 - P.x1).toFixed(5)} F${fFast} ;Fast test section`,
-            `G1 X${P.x3.toFixed(2)} Y${y.toFixed(2)} E${ext(c, P.x3 - P.x2).toFixed(5)} F${fSlow} ;Slow lead-out`);
-        if (i < c.values.length - 1) add(`G1 X${P.x3.toFixed(2)} Y${(y + c.pitch).toFixed(2)} E${ext(c, c.pitch).toFixed(5)} F${fSlow} ;Connector; do not judge`);
+        add(`G1 X${g.x1.toFixed(2)} Y${y.toFixed(2)} E${ext(c, g.x1 - g.x0).toFixed(5)} F${fSlow} ;Slow lead-in`,
+            `G1 X${g.x2.toFixed(2)} Y${y.toFixed(2)} E${ext(c, g.x2 - g.x1).toFixed(5)} F${fFast} ;Fast test section`,
+            `G1 X${g.x3.toFixed(2)} Y${y.toFixed(2)} E${ext(c, g.x3 - g.x2).toFixed(5)} F${fSlow} ;Slow lead-out`);
+        if (i < c.values.length - 1) add(`G1 X${g.x3.toFixed(2)} Y${(y + c.pitch).toFixed(2)} E${ext(c, c.pitch).toFixed(5)} F${fSlow} ;Connector; do not judge`);
       } else {
-        add(`G1 X${P.x2.toFixed(2)} Y${y.toFixed(2)} E${ext(c, P.x3 - P.x2).toFixed(5)} F${fSlow} ;Slow lead-in`,
-            `G1 X${P.x1.toFixed(2)} Y${y.toFixed(2)} E${ext(c, P.x2 - P.x1).toFixed(5)} F${fFast} ;Fast test section`,
-            `G1 X${P.x0.toFixed(2)} Y${y.toFixed(2)} E${ext(c, P.x1 - P.x0).toFixed(5)} F${fSlow} ;Slow lead-out`);
-        if (i < c.values.length - 1) add(`G1 X${P.x0.toFixed(2)} Y${(y + c.pitch).toFixed(2)} E${ext(c, c.pitch).toFixed(5)} F${fSlow} ;Connector; do not judge`);
+        add(`G1 X${g.x2.toFixed(2)} Y${y.toFixed(2)} E${ext(c, g.x3 - g.x2).toFixed(5)} F${fSlow} ;Slow lead-in`,
+            `G1 X${g.x1.toFixed(2)} Y${y.toFixed(2)} E${ext(c, g.x2 - g.x1).toFixed(5)} F${fFast} ;Fast test section`,
+            `G1 X${g.x0.toFixed(2)} Y${y.toFixed(2)} E${ext(c, g.x1 - g.x0).toFixed(5)} F${fSlow} ;Slow lead-out`);
+        if (i < c.values.length - 1) add(`G1 X${g.x0.toFixed(2)} Y${(y + c.pitch).toFixed(2)} E${ext(c, c.pitch).toFixed(5)} F${fSlow} ;Connector; do not judge`);
       }
     });
     add('', 'G1 E-0.60 F1800 ;Retract after entire pattern',
@@ -390,13 +416,13 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       'M84 X Y E ;Disable X/Y/E steppers; keep Z held',
       '; End of file');
     const body = lines.join('\n') + '\n';
-    const bounds = validateXYBounds(body);
+    const bounds = validateXYBounds(body, c);
     const minutes = estimateMotionMinutes(body);
     const filamentMm = estimateExtrudedFilament(body);
-    const prefix = `; Estimated movement/dwell time: ${minutes.toFixed(2)} minutes. Heating, homing and G29 time excluded.\n; Approximate positive filament extrusion: ${filamentMm.toFixed(1)} mm.\n; XY bounds checked: X${bounds.minX.toFixed(2)}-${bounds.maxX.toFixed(2)} / Y${bounds.minY.toFixed(2)}-${bounds.maxY.toFixed(2)} mm within X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)}.\n`;
+    const prefix = `; Estimated movement/dwell time: ${minutes.toFixed(2)} minutes. Heating, homing and G29 time excluded.\n; Approximate positive filament extrusion: ${filamentMm.toFixed(1)} mm.\n; XY bounds checked: X${bounds.minX.toFixed(2)}-${bounds.maxX.toFixed(2)} / Y${bounds.minY.toFixed(2)}-${bounds.maxY.toFixed(2)} mm within chosen X0-${c.maxTravelX.toFixed(1)} / Y0-${c.maxTravelY.toFixed(1)} and printer X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)}.\n`;
     return {text: prefix + body, minutes, filamentMm, bounds};
   }
-  function validateXYBounds(text) {
+  function validateXYBounds(text, c) {
     let x = 0, y = 0, absXYZ = true;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const raw of text.split(/\r?\n/)) {
@@ -420,7 +446,10 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
         minX = Math.min(minX, nx); maxX = Math.max(maxX, nx);
         minY = Math.min(minY, ny); maxY = Math.max(maxY, ny);
         if (nx < -1e-8 || nx > BED.x + 1e-8 || ny < -1e-8 || ny > BED.y + 1e-8) {
-          throw new Error(`Generated move X${nx.toFixed(2)} Y${ny.toFixed(2)} is outside configured limits X0-${BED.x.toFixed(1)}, Y0-${BED.y.toFixed(1)}.`);
+          throw new Error(`Generated move X${nx.toFixed(2)} Y${ny.toFixed(2)} is outside printer limits X0-${BED.x.toFixed(1)}, Y0-${BED.y.toFixed(1)}.`);
+        }
+        if (nx > c.maxTravelX + 1e-8 || ny > c.maxTravelY + 1e-8) {
+          throw new Error(`Generated move X${nx.toFixed(2)} Y${ny.toFixed(2)} is outside your selected maximum area X0-${c.maxTravelX.toFixed(1)}, Y0-${c.maxTravelY.toFixed(1)}.`);
         }
       }
       x = nx; y = ny;
@@ -489,7 +518,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     return hh ? `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}` : `${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
   }
   function draw(c) {
-    const canvas = $('preview'), ctx = canvas.getContext('2d');
+    const canvas = $('preview'), ctx = canvas.getContext('2d'), g = c.geom;
     const pad = 38, sx = (canvas.width - pad * 2) / BED.x, sy = (canvas.height - pad * 2) / BED.y;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#081019'; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -499,25 +528,32 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     for (let v = 50; v < BED.y; v += 50) { ctx.beginPath(); ctx.moveTo(pad, pad + BED.y*sy - v*sy); ctx.lineTo(pad + BED.x*sx, pad + BED.y*sy - v*sy); ctx.stroke(); }
     ctx.fillStyle = '#7991a8'; ctx.font = '13px Segoe UI, Arial';
     ctx.fillText('0,0', pad - 3, pad + BED.y * sy + 22); ctx.fillText(`X ${BED.x}`, pad + BED.x * sx - 40, pad + BED.y * sy + 22); ctx.fillText(`Y ${BED.y}`, pad + 3, pad - 11);
+    // User-selected permitted generated movement area.
+    ctx.save();
+    ctx.setLineDash([7, 5]); ctx.strokeStyle = '#60758c'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(pad, pad + (BED.y - c.maxTravelY) * sy, c.maxTravelX * sx, c.maxTravelY * sy);
+    ctx.restore();
+    ctx.fillStyle = '#91a6ba'; ctx.fillText(`Selected max X${c.maxTravelX.toFixed(1)} / Y${c.maxTravelY.toFixed(1)}`, pad + 7, pad + (BED.y - c.maxTravelY) * sy + 17);
     ctx.save(); ctx.translate(pad, pad + BED.y * sy); ctx.scale(sx, -sy); ctx.lineWidth = 1.3 / sx;
     c.values.forEach((k, i) => {
-      const y = P.y0 + i * c.pitch, t = (k - c.minK) / (c.maxK - c.minK || 1), hue = 210 - 190 * t;
+      const y = g.y0 + i * c.pitch, t = (k - c.minK) / (c.maxK - c.minK || 1), hue = 210 - 190 * t;
       ctx.strokeStyle = `hsl(${hue},85%,62%)`;
       ctx.beginPath();
-      if (i % 2 === 0) { ctx.moveTo(P.x0,y); ctx.lineTo(P.x3,y); if (i < c.values.length-1) ctx.lineTo(P.x3,y+c.pitch); }
-      else { ctx.moveTo(P.x3,y); ctx.lineTo(P.x0,y); if (i < c.values.length-1) ctx.lineTo(P.x0,y+c.pitch); }
+      if (i % 2 === 0) { ctx.moveTo(g.x0,y); ctx.lineTo(g.x3,y); if (i < c.values.length-1) ctx.lineTo(g.x3,y+c.pitch); }
+      else { ctx.moveTo(g.x3,y); ctx.lineTo(g.x0,y); if (i < c.values.length-1) ctx.lineTo(g.x0,y+c.pitch); }
       ctx.stroke();
       ctx.strokeStyle = 'rgba(255,255,255,.24)'; ctx.beginPath();
-      if (i % 2 === 0) { ctx.moveTo(P.x1,y); ctx.lineTo(P.x2,y); }
-      else { ctx.moveTo(P.x2,y); ctx.lineTo(P.x1,y); }
+      if (i % 2 === 0) { ctx.moveTo(g.x1,y); ctx.lineTo(g.x2,y); }
+      else { ctx.moveTo(g.x2,y); ctx.lineTo(g.x1,y); }
       ctx.stroke();
     });
     ctx.restore();
-    ctx.fillStyle = '#91a6ba'; ctx.fillText(`Bottom K${formatNumber(c.values[0])}`, pad + 6, pad + BED.y * sy - P.y0 * sy - 7);
-    ctx.fillText(`Top K${formatNumber(c.values[c.values.length-1])}`, pad + 6, pad + BED.y * sy - (P.y0+(c.values.length-1)*c.pitch)*sy - 7);
+    ctx.fillStyle = '#91a6ba'; ctx.fillText(`Bottom K${formatNumber(c.values[0])}`, pad + 6, pad + BED.y * sy - g.y0 * sy - 7);
+    ctx.fillText(`Top K${formatNumber(c.values[c.values.length-1])}`, pad + 6, pad + BED.y * sy - (g.y0+(c.values.length-1)*c.pitch)*sy - 7);
   }
   function guideText(c) {
-    return c.values.map((k,i) => `Row ${String(i+1).padStart(3,'0')}  Y${(P.y0+i*c.pitch).toFixed(2)}  K${formatNumber(k)}`).join('\n');
+    const g = c.geom;
+    return c.values.map((k,i) => `Row ${String(i+1).padStart(3,'0')}  Y${(g.y0+i*c.pitch).toFixed(2)}  K${formatNumber(k)}`).join('\n');
   }
   function selectedCommand() {
     const k = Number($('chosenK').value);
@@ -527,12 +563,12 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
   function store() {
     try {
       const obj = {}; fields.forEach(id => obj[id] = $(id).type === 'checkbox' ? $(id).checked : $(id).value);
-      localStorage.setItem('laGeneratorSafeSettingsV2', JSON.stringify(obj));
+      localStorage.setItem('laGeneratorSafeSettingsV3', JSON.stringify(obj));
     } catch (_) {}
   }
   function load() {
     try {
-      const saved = JSON.parse(localStorage.getItem('laGeneratorSafeSettingsV2') || 'null');
+      const saved = JSON.parse(localStorage.getItem('laGeneratorSafeSettingsV3') || 'null');
       const source = saved || defaults;
       fields.forEach(id => { if (!(id in source)) return; if ($(id).type === 'checkbox') $(id).checked = Boolean(source[id]); else $(id).value = source[id]; });
     } catch (_) { resetDefaults(); }
@@ -560,8 +596,9 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       $('flowOut').textContent = `${c.maxFlow.toFixed(2)} mm³/s`;
       $('filamentOut').textContent = `${generated.filamentMm.toFixed(0)} mm`;
       $('fileOut').textContent = name;
-      $('mapping').innerHTML = c.values.map((k,i) => `<div class="map-row"><span>Row ${String(i+1).padStart(3,'0')} · Y${(P.y0+i*c.pitch).toFixed(1)}</span><strong>K${formatNumber(k)}</strong></div>`).join('');
-      $('summary').textContent = `Bottom row is K${formatNumber(c.values[0])}; top row is K${formatNumber(c.values[c.values.length-1])}. Rows are ${c.pitch.toFixed(2)} mm apart. The brighter central portion of each row is the fast section to judge.`;
+      $('limitChip').textContent = `Generated moves limited within X${c.maxTravelX.toFixed(1)} × Y${c.maxTravelY.toFixed(1)}`;
+      $('mapping').innerHTML = c.values.map((k,i) => `<div class="map-row"><span>Row ${String(i+1).padStart(3,'0')} · Y${(c.geom.y0+i*c.pitch).toFixed(1)}</span><strong>K${formatNumber(k)}</strong></div>`).join('');
+      $('summary').textContent = `Bottom row is K${formatNumber(c.values[0])}; top row is K${formatNumber(c.values[c.values.length-1])}. Rows are ${c.pitch.toFixed(2)} mm apart. Test span is ${(c.geom.x3-c.geom.x0).toFixed(1)} mm, with a ${(c.geom.x2-c.geom.x1).toFixed(1)} mm fast section to judge.`;
       $('download').disabled = false; $('copyGuide').disabled = false; $('copyGcode').disabled = false; $('showGcode').disabled = false;
       draw(c); store();
       return current;
