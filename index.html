@@ -116,10 +116,10 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       <details open>
         <summary>Generated movement area</summary>
         <div class="advanced">
-          <div><label for="maxTravelX">Maximum used X mm</label><input id="maxTravelX" type="number" value="290" step="0.1" min="140" max="309"></div>
-          <div><label for="maxTravelY">Maximum used Y mm</label><input id="maxTravelY" type="number" value="316" step="0.1" min="60" max="331"></div>
+          <div><label for="maxTravelX">Maximum test X mm</label><input id="maxTravelX" type="number" value="290" step="0.1" min="140" max="309"></div>
+          <div><label for="maxTravelY">Maximum test Y mm</label><input id="maxTravelY" type="number" value="316" step="0.1" min="60" max="331"></div>
         </div>
-        <p class="hint">All generated purge and test moves are kept inside this area. Minimums are <strong>X140 mm</strong> and <strong>Y60 mm</strong>: this preserves at least an 80 mm fast section and sufficient space for differing K rows. Hard printer limits remain X309.0 / Y331.0.</p>
+        <p class="hint">The continuous K-test pattern is kept inside this area. Your normal purge line remains fixed at <strong>X0–1 / Y20–140 mm</strong> and is checked only against the printer limits. Minimums are <strong>X140 mm</strong> and <strong>Y60 mm</strong>, preserving an 80 mm fast test section. Hard printer limits remain X309.0 / Y331.0.</p>
       </details>
       <div id="error" role="alert"></div>
       <ul id="warnings" aria-live="polite"></ul>
@@ -129,6 +129,9 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
         <button id="copyGcode" class="secondary">Copy G-code</button>
         <button id="showGcode" class="secondary">Show G-code</button>
         <button id="reset" class="secondary">Reset defaults</button>
+      </div>
+      <div class="info">
+        <strong>Start-position fix:</strong> the generated file follows your normal warm-up order: bed heat → home → nozzle standby heat → optional <code>G29</code> → move to <code>X0 Y0</code> → wait for print temperature. It cannot intentionally wait for final nozzle temperature in the middle of the bed.
       </div>
       <div class="info">
         <strong>Safety fix:</strong> the generated file no longer forces <code>M92 E409</code> by default. Your calibrated extruder steps remain unchanged unless “Override E-steps” is switched on below.
@@ -216,7 +219,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     return {
       x0:BASE.x0, x1:BASE.x0 + span / 6, x2:BASE.x0 + span * 5 / 6, x3:maxX,
       y0:BASE.y0, maxY, minPitch:BASE.minPitch, z:BASE.z,
-      purgeX0:0.0, purgeX1:1.0, purgeY0:20.0, purgeY1:Math.min(140.0, maxY - 5.0)
+      purgeX0:0.0, purgeX1:1.0, purgeY0:20.0, purgeY1:140.0
     };
   }
   let current = null;
@@ -265,11 +268,11 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     const minK = value('minK', 'minimum K'), maxK = value('maxK', 'maximum K');
     if (minK < 0 || maxK < 0) throw new Error('K values must not be negative.');
     if (maxK <= minK) throw new Error('Maximum K must be greater than minimum K.');
-    const maxTravelX = value('maxTravelX', 'maximum used X');
-    const maxTravelY = value('maxTravelY', 'maximum used Y');
-    if (maxTravelX < MIN_AREA.maxX) throw new Error(`Maximum used X must be at least ${MIN_AREA.maxX.toFixed(1)} mm so the speed change has a usable test length.`);
-    if (maxTravelY < MIN_AREA.maxY) throw new Error(`Maximum used Y must be at least ${MIN_AREA.maxY.toFixed(1)} mm so multiple K rows can be compared.`);
-    if (maxTravelX > BED.x || maxTravelY > BED.y) throw new Error(`Selected movement area must stay within X0-${BED.x.toFixed(1)} and Y0-${BED.y.toFixed(1)} mm.`);
+    const maxTravelX = value('maxTravelX', 'maximum test X');
+    const maxTravelY = value('maxTravelY', 'maximum test Y');
+    if (maxTravelX < MIN_AREA.maxX) throw new Error(`Maximum test X must be at least ${MIN_AREA.maxX.toFixed(1)} mm so the speed change has a usable test length.`);
+    if (maxTravelY < MIN_AREA.maxY) throw new Error(`Maximum test Y must be at least ${MIN_AREA.maxY.toFixed(1)} mm so multiple K rows can be compared.`);
+    if (maxTravelX > BED.x || maxTravelY > BED.y) throw new Error(`Selected test-pattern area must stay within X0-${BED.x.toFixed(1)} and Y0-${BED.y.toFixed(1)} mm.`);
     const geom = makeGeometry(maxTravelX, maxTravelY);
     const manual = $('stepMode').value === 'manual';
     const step = manual ? value('manualStep', 'manual step') : autoStep(minK, maxK, geom);
@@ -313,8 +316,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     if (c.nozzle > 270) out.push('The selected nozzle temperature is unusually high for PETG; verify the filament and firmware temperature limits.');
     if (c.bed > 100) out.push('The selected bed temperature is unusually high for PETG/glass; verify your build surface limits.');
     if (c.fanPercent > 50) out.push('High part cooling can reduce PETG layer bonding; use it only if needed for this line test.');
-    if (c.maxTravelX > BED.x - 5) out.push('Maximum used X is very close to the configured X limit; leave a small margin unless you have already verified this travel.');
-    if (c.maxTravelY > BED.y - 5) out.push('Maximum used Y is very close to the configured Y limit; leave a small margin unless you have already verified this travel.');
+    if (c.maxTravelX > BED.x - 5) out.push('Maximum test X is very close to the configured X limit; leave a small margin unless you have already verified this travel.');
+    if (c.maxTravelY > BED.y - 5) out.push('Maximum test Y is very close to the configured Y limit; leave a small margin unless you have already verified this travel.');
     if (c.overrideESteps) out.push(`This G-code will temporarily command M92 E${formatNumber(c.eSteps)}.`);
     if (c.forceMotion) out.push('M204/M205 overrides remain active after this test until changed, power-cycled, or settings are reloaded.');
     const lastIncrement = c.values.length > 1 ? round6(c.values[c.values.length-1] - c.values[c.values.length-2]) : c.step;
@@ -344,7 +347,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       `; Part cooling fan: ${formatNumber(c.fanPercent)}% (M106 S${c.fanPwm})`,
       `; Maximum nominal volumetric flow: ${c.maxFlow.toFixed(2)} mm^3/s`,
       `; Configured XY movement limits: X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)} mm`,
-      `; Selected maximum generated XY: X${c.maxTravelX.toFixed(1)} / Y${c.maxTravelY.toFixed(1)} mm`,
+      `; Selected maximum test-pattern XY: X${c.maxTravelX.toFixed(1)} / Y${c.maxTravelY.toFixed(1)} mm`,
+      `; Normal purge path: X0.0-1.0 / Y20.0-140.0 mm (independent of test-pattern maximum).`,
       `; Pattern actually used: X${g.x0.toFixed(1)}-${g.x3.toFixed(1)} / Y${g.y0.toFixed(1)}-${(g.y0 + (c.values.length - 1) * c.pitch).toFixed(1)} mm`,
       ';');
     add('; Row guide:');
@@ -355,29 +359,33 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       'G90 ;Absolute XYZ positioning',
       'M83 ;Relative extrusion throughout this file');
     if (c.overrideESteps) add(`M92 E${formatNumber(c.eSteps)} ;User-enabled E-steps override for this print only`);
-    add(`M140 S${formatNumber(c.bed)} ;Start heating bed`,
-      'M104 S150 ;Low-ooze nozzle standby temperature',
+    add('M107 ;Part cooling fan off during warm-up and purge',
+      `M140 S${formatNumber(c.bed)} ;Start heating bed`,
       `M190 S${formatNumber(c.bed)} ;Wait for bed temperature`,
-      'G28 ;Home all axes');
+      'G28 ;Home all axes',
+      'M104 S150 ;Start nozzle standby preheat after homing, before bed leveling');
     if (c.levelBed) add('G29 ;Probe bed mesh before test');
     else add('; G29 disabled in generator settings');
-    add('G1 Z10 F3000 ;Lift before moving to purge corner',
-      'G1 X0 Y0 F5000 ;Go to purge corner',
+    add('G90 ;Ensure absolute XYZ positioning after probing',
+      'G92 E0',
+      'G1 Z10 F3000 ;Lift before moving to purge corner',
+      'G1 X0 Y0 F5000 ;Go to purge corner before final nozzle heating',
       `G1 Z${g.z.toFixed(2)} F1200 ;Purge height`,
-      `M109 S${formatNumber(c.nozzle)} ;Heat nozzle and wait`,
-      `M106 S${c.fanPwm} ;Part cooling fan ${formatNumber(c.fanPercent)}% (PWM 0-255)`,
-      'G4 S2 ;Allow pressure, temperature, and fan to settle',
+      `M109 S${formatNumber(c.nozzle)} ;Heat nozzle to print temperature and wait at X0 Y0`,
+      'G4 S2 ;Short settle time at final nozzle temperature',
       'G92 E0');
     if (c.compatibility === 'legacy') add('M900 R0 ;Older Linear Advance: set E/D ratio to Auto');
     add('M900 K0 ;Disable Linear Advance during purge',
       'G1 E5.0 F300 ;Prime nozzle',
       'G1 E-0.6 F1800 ;Small retract before purge lines',
       'G1 E0.6 F1800 ;Undo retract',
-      `G1 X${g.purgeX0.toFixed(2)} Y${g.purgeY1.toFixed(2)} E10 F900 ;First purge line within selected Y maximum`,
+      `G1 X${g.purgeX0.toFixed(2)} Y${g.purgeY1.toFixed(2)} E10 F900 ;First normal purge line`,
       `G1 X${g.purgeX1.toFixed(2)} Y${g.purgeY1.toFixed(2)} F5000 ;Shift sideways`,
-      `G1 X${g.purgeX1.toFixed(2)} Y${g.purgeY0.toFixed(2)} E10 F900 ;Second purge line`,
+      `G1 X${g.purgeX1.toFixed(2)} Y${g.purgeY0.toFixed(2)} E10 F900 ;Second normal purge line`,
       'G1 E-0.6 F1800 ;Retract before test',
       'G92 E0',
+      `M106 S${c.fanPwm} ;Apply chosen part cooling fan to test pattern: ${formatNumber(c.fanPercent)}%`,
+      'G4 S2 ;Allow chosen test fan speed to settle',
       '', '; --- Continuous LA test pattern ---');
     if (c.forceMotion) add(`M204 P${formatNumber(c.accel)} ;User-enabled test print acceleration`, `M205 X${formatNumber(c.jerk)} Y${formatNumber(c.jerk)} ;User-enabled XY jerk`);
     else add('; M204/M205 not overridden; uses the printer current motion settings');
@@ -416,13 +424,22 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       'M84 X Y E ;Disable X/Y/E steppers; keep Z held',
       '; End of file');
     const body = lines.join('\n') + '\n';
-    const bounds = validateXYBounds(body, c);
+    const patternBounds = validatePatternBounds(c);
+    const bounds = validateXYBounds(body);
     const minutes = estimateMotionMinutes(body);
     const filamentMm = estimateExtrudedFilament(body);
-    const prefix = `; Estimated movement/dwell time: ${minutes.toFixed(2)} minutes. Heating, homing and G29 time excluded.\n; Approximate positive filament extrusion: ${filamentMm.toFixed(1)} mm.\n; XY bounds checked: X${bounds.minX.toFixed(2)}-${bounds.maxX.toFixed(2)} / Y${bounds.minY.toFixed(2)}-${bounds.maxY.toFixed(2)} mm within chosen X0-${c.maxTravelX.toFixed(1)} / Y0-${c.maxTravelY.toFixed(1)} and printer X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)}.\n`;
-    return {text: prefix + body, minutes, filamentMm, bounds};
+    const prefix = `; Estimated movement/dwell time: ${minutes.toFixed(2)} minutes. Heating, homing and G29 time excluded.\n; Approximate positive filament extrusion: ${filamentMm.toFixed(1)} mm.\n; Overall commanded XY bounds checked against printer travel: X${bounds.minX.toFixed(2)}-${bounds.maxX.toFixed(2)} / Y${bounds.minY.toFixed(2)}-${bounds.maxY.toFixed(2)} mm within X0-${BED.x.toFixed(1)} / Y0-${BED.y.toFixed(1)}.\n; K-test pattern bounds checked against selected test area: X${patternBounds.minX.toFixed(2)}-${patternBounds.maxX.toFixed(2)} / Y${patternBounds.minY.toFixed(2)}-${patternBounds.maxY.toFixed(2)} mm within X0-${c.maxTravelX.toFixed(1)} / Y0-${c.maxTravelY.toFixed(1)}.\n; Normal purge line is intentionally fixed at X0-1 / Y20-140, independent of the selected test-area maximum.\n`;
+    return {text: prefix + body, minutes, filamentMm, bounds, patternBounds};
   }
-  function validateXYBounds(text, c) {
+  function validatePatternBounds(c) {
+    const g = c.geom;
+    const bounds = {minX:g.x0, maxX:g.x3, minY:g.y0, maxY:g.y0 + (c.values.length - 1) * c.pitch};
+    if (bounds.minX < -1e-8 || bounds.minY < -1e-8 || bounds.maxX > c.maxTravelX + 1e-8 || bounds.maxY > c.maxTravelY + 1e-8) {
+      throw new Error(`Test pattern X${bounds.minX.toFixed(2)}-${bounds.maxX.toFixed(2)} Y${bounds.minY.toFixed(2)}-${bounds.maxY.toFixed(2)} is outside your selected maximum test area.`);
+    }
+    return bounds;
+  }
+  function validateXYBounds(text) {
     let x = 0, y = 0, absXYZ = true;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const raw of text.split(/\r?\n/)) {
@@ -447,9 +464,6 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
         minY = Math.min(minY, ny); maxY = Math.max(maxY, ny);
         if (nx < -1e-8 || nx > BED.x + 1e-8 || ny < -1e-8 || ny > BED.y + 1e-8) {
           throw new Error(`Generated move X${nx.toFixed(2)} Y${ny.toFixed(2)} is outside printer limits X0-${BED.x.toFixed(1)}, Y0-${BED.y.toFixed(1)}.`);
-        }
-        if (nx > c.maxTravelX + 1e-8 || ny > c.maxTravelY + 1e-8) {
-          throw new Error(`Generated move X${nx.toFixed(2)} Y${ny.toFixed(2)} is outside your selected maximum area X0-${c.maxTravelX.toFixed(1)}, Y0-${c.maxTravelY.toFixed(1)}.`);
         }
       }
       x = nx; y = ny;
@@ -528,13 +542,15 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     for (let v = 50; v < BED.y; v += 50) { ctx.beginPath(); ctx.moveTo(pad, pad + BED.y*sy - v*sy); ctx.lineTo(pad + BED.x*sx, pad + BED.y*sy - v*sy); ctx.stroke(); }
     ctx.fillStyle = '#7991a8'; ctx.font = '13px Segoe UI, Arial';
     ctx.fillText('0,0', pad - 3, pad + BED.y * sy + 22); ctx.fillText(`X ${BED.x}`, pad + BED.x * sx - 40, pad + BED.y * sy + 22); ctx.fillText(`Y ${BED.y}`, pad + 3, pad - 11);
-    // User-selected permitted generated movement area.
+    // User-selected permitted continuous K-test pattern area.
     ctx.save();
     ctx.setLineDash([7, 5]); ctx.strokeStyle = '#60758c'; ctx.lineWidth = 1.5;
     ctx.strokeRect(pad, pad + (BED.y - c.maxTravelY) * sy, c.maxTravelX * sx, c.maxTravelY * sy);
     ctx.restore();
-    ctx.fillStyle = '#91a6ba'; ctx.fillText(`Selected max X${c.maxTravelX.toFixed(1)} / Y${c.maxTravelY.toFixed(1)}`, pad + 7, pad + (BED.y - c.maxTravelY) * sy + 17);
+    ctx.fillStyle = '#91a6ba'; ctx.fillText(`Test max X${c.maxTravelX.toFixed(1)} / Y${c.maxTravelY.toFixed(1)}`, pad + 7, pad + (BED.y - c.maxTravelY) * sy + 17);
     ctx.save(); ctx.translate(pad, pad + BED.y * sy); ctx.scale(sx, -sy); ctx.lineWidth = 1.3 / sx;
+    ctx.save(); ctx.setLineDash([4 / sx, 4 / sx]); ctx.strokeStyle = 'rgba(200,210,220,.55)';
+    ctx.beginPath(); ctx.moveTo(g.purgeX0, g.purgeY0); ctx.lineTo(g.purgeX0, g.purgeY1); ctx.lineTo(g.purgeX1, g.purgeY1); ctx.lineTo(g.purgeX1, g.purgeY0); ctx.stroke(); ctx.restore();
     c.values.forEach((k, i) => {
       const y = g.y0 + i * c.pitch, t = (k - c.minK) / (c.maxK - c.minK || 1), hue = 210 - 190 * t;
       ctx.strokeStyle = `hsl(${hue},85%,62%)`;
@@ -548,7 +564,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       ctx.stroke();
     });
     ctx.restore();
-    ctx.fillStyle = '#91a6ba'; ctx.fillText(`Bottom K${formatNumber(c.values[0])}`, pad + 6, pad + BED.y * sy - g.y0 * sy - 7);
+    ctx.fillStyle = '#91a6ba'; ctx.fillText('Normal purge X0–1 / Y20–140', pad + 6, pad + BED.y * sy - 146 * sy);
+    ctx.fillText(`Bottom K${formatNumber(c.values[0])}`, pad + 6, pad + BED.y * sy - g.y0 * sy - 7);
     ctx.fillText(`Top K${formatNumber(c.values[c.values.length-1])}`, pad + 6, pad + BED.y * sy - (g.y0+(c.values.length-1)*c.pitch)*sy - 7);
   }
   function guideText(c) {
