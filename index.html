@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Older Marlin Linear Advance G-code Generator</title>
+<style>
+:root{
+  --bg:#0b1016; --panel:#121a23; --panel2:#192431; --line:#263547;
+  --text:#e8eef5; --muted:#9db0c2; --accent:#60a5fa; --accent2:#38bdf8;
+  --good:#34d399; --warn:#fbbf24; --danger:#fb7185;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; min-height:100vh; background:linear-gradient(145deg,#070b10,#0e1722 55%,#111c29);
+  color:var(--text); font-family:Inter,Segoe UI,Arial,sans-serif;
+}
+.wrap{max-width:1120px; margin:0 auto; padding:28px 18px 42px}
+h1{margin:0 0 7px;font-size:clamp(1.6rem,3.4vw,2.4rem);letter-spacing:-.035em}
+.sub{color:var(--muted);max-width:760px;line-height:1.5;margin:0 0 22px}
+.grid{display:grid;grid-template-columns:370px 1fr;gap:18px;align-items:start}
+.card{
+  background:rgba(18,26,35,.94);border:1px solid var(--line);border-radius:18px;
+  padding:18px;box-shadow:0 18px 44px rgba(0,0,0,.18);
+}
+.card h2{font-size:1.04rem;margin:0 0 15px}
+label{display:block;color:var(--muted);font-size:.86rem;margin:0 0 7px}
+.input-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+input[type="number"]{
+  width:100%; background:#091019;border:1px solid #314355;color:var(--text);
+  border-radius:11px;padding:12px;font-size:1.08rem;outline:none;
+}
+input[type="number"]:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(96,165,250,.15)}
+button{
+  border:0;border-radius:12px;padding:13px 14px;font-size:.96rem;font-weight:650;cursor:pointer;
+  transition:transform .08s ease,background .15s ease,opacity .15s ease;
+}
+button:active{transform:translateY(1px)}
+.primary{
+  width:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));color:#06121d;
+  margin-top:8px;
+}
+.secondary{background:#1d2a38;color:var(--text);border:1px solid #2c4053;padding:10px 12px}
+.buttons{display:flex;gap:9px;margin-top:13px;flex-wrap:wrap}
+.info{
+  background:#0b131d;border:1px solid #223345;border-radius:13px;padding:13px;
+  color:var(--muted);font-size:.86rem;line-height:1.46;margin-top:15px;
+}
+.warning{border-color:#514424;color:#f5d57d;background:#191711}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(88px,1fr));gap:10px;margin-bottom:17px}
+.stat{background:var(--panel2);border-radius:12px;padding:12px;border:1px solid #253546}
+.stat .name{font-size:.76rem;color:var(--muted);margin-bottom:5px}
+.stat .val{font-size:1.18rem;font-weight:650;font-variant-numeric:tabular-nums}
+.good{color:var(--good)}
+.preview-wrap{display:grid;grid-template-columns:minmax(330px,1fr) 245px;gap:14px}
+canvas{
+  width:100%;height:420px;display:block;background:#080e15;border:1px solid #243344;
+  border-radius:13px;
+}
+.mapping{
+  height:420px;overflow:auto;background:#0a111a;border:1px solid #243344;border-radius:13px;
+  padding:8px 10px;font-size:.82rem;font-variant-numeric:tabular-nums;
+}
+.map-row{display:flex;justify-content:space-between;padding:4px 5px;border-radius:6px;color:var(--muted)}
+.map-row:nth-child(10n+1){color:#e7f3ff;background:#142332}
+.mini{font-size:.79rem;color:var(--muted);line-height:1.45;margin-top:12px}
+details{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+summary{color:#d1e2f2;cursor:pointer;font-size:.9rem}
+.advanced{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.advanced input{font-size:.93rem;padding:9px}
+.err{color:var(--danger);font-size:.9rem;min-height:20px;margin-top:8px}
+code{background:#0a1018;border-radius:5px;padding:1px 5px;color:#d4e8fa}
+@media(max-width:860px){.grid{grid-template-columns:1fr}.preview-wrap{grid-template-columns:1fr}.mapping{height:230px}.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Older Marlin Linear Advance Test Generator</h1>
+  <p class="sub">Enter the minimum and maximum older-scale K values. This generates a continuous PETG test line for your Ender 5 Plus with Hemera, automatically selects a useful step size, fits it onto the bed, and downloads the G-code named by estimated motion time.</p>
+
+  <div class="grid">
+    <section class="card">
+      <h2>K range</h2>
+      <div class="input-row">
+        <div>
+          <label for="minK">Minimum K</label>
+          <input id="minK" type="number" value="20" step="any" min="0">
+        </div>
+        <div>
+          <label for="maxK">Maximum K</label>
+          <input id="maxK" type="number" value="50" step="any" min="0">
+        </div>
+      </div>
+      <div id="error" class="err"></div>
+      <button id="download" class="primary">Download generated G-code</button>
+      <div class="buttons">
+        <button id="copyGuide" class="secondary">Copy row guide</button>
+        <button id="showGcode" class="secondary">Show G-code</button>
+      </div>
+
+      <div class="info">
+        Generated for <strong>older Linear Advance K scale</strong>, where values such as <code>K20</code> to <code>K50</code> are expected. The test uses <code>M900 R0</code> for E/D Auto and <code>M400</code> before each K change.
+      </div>
+
+      <details>
+        <summary>Optional material/test settings</summary>
+        <div class="advanced">
+          <div><label for="nozzle">Nozzle °C</label><input id="nozzle" type="number" value="245"></div>
+          <div><label for="bed">Bed °C</label><input id="bed" type="number" value="85"></div>
+          <div><label for="slow">Slow mm/s</label><input id="slow" type="number" value="15"></div>
+          <div><label for="fast">Fast mm/s</label><input id="fast" type="number" value="60"></div>
+        </div>
+      </details>
+      <p class="mini">The filename estimates repeatable motion/dwell time only. Heating, homing and <code>G29</code> bed levelling are variable and therefore excluded.</p>
+    </section>
+
+    <section class="card">
+      <div class="stats">
+        <div class="stat"><div class="name">Auto step</div><div class="val good" id="stepOut">K1</div></div>
+        <div class="stat"><div class="name">Rows</div><div class="val" id="rowsOut">31</div></div>
+        <div class="stat"><div class="name">Motion time</div><div class="val" id="timeOut">00:05</div></div>
+        <div class="stat"><div class="name">Filename</div><div class="val" id="fileOut" style="font-size:.95rem">00_05.gcode</div></div>
+      </div>
+
+      <div class="preview-wrap">
+        <canvas id="preview" width="720" height="760" aria-label="Generated linear advance line preview"></canvas>
+        <div id="mapping" class="mapping" aria-label="Row to K mapping"></div>
+      </div>
+      <p class="mini" id="summary">Bottom row is K20; top row is K50. Judge only the long horizontal slow → fast → slow sections, ignoring the vertical connectors.</p>
+    </section>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const el = {
+    min: $('minK'), max: $('maxK'), nozzle: $('nozzle'), bed: $('bed'),
+    slow: $('slow'), fast: $('fast'), error: $('error'),
+    step: $('stepOut'), rows: $('rowsOut'), time: $('timeOut'), file: $('fileOut'),
+    mapping: $('mapping'), preview: $('preview'), summary: $('summary')
+  };
+
+  const formatNumber = n => {
+    const decimals = n % 1 === 0 ? 0 : (Math.abs(n * 10 - Math.round(n * 10)) < 1e-8 ? 1 :
+                     Math.abs(n * 100 - Math.round(n * 100)) < 1e-8 ? 2 : 3);
+    return n.toFixed(decimals);
+  };
+
+  function ceilToNiceStep(raw) {
+    const options = [0.01,0.02,0.025,0.05,0.1,0.2,0.25,0.5,1,2,2.5,5,10,20,25,50,100];
+    return options.find(v => v >= raw - 1e-10) || Math.ceil(raw / 100) * 100;
+  }
+
+  function chooseStep(minK, maxK) {
+    const range = maxK - minK;
+    let preferred;
+    if (range <= 1) preferred = 0.01;
+    else if (range <= 2.5) preferred = 0.025;
+    else if (range <= 5) preferred = 0.05;
+    else if (range <= 10) preferred = 0.1;
+    else if (range <= 20) preferred = 0.25;
+    else if (range <= 40) preferred = 1;       // K20-K50 -> K1
+    else if (range <= 100) preferred = 2;
+    else preferred = ceilToNiceStep(range / 40);
+    // 101 rows is the absolute fit limit at 3 mm row spacing.
+    return Math.max(preferred, ceilToNiceStep(range / 100));
+  }
+
+  function settings() {
+    const minK = Number(el.min.value), maxK = Number(el.max.value);
+    const nozzle = Number(el.nozzle.value), bed = Number(el.bed.value);
+    const slow = Number(el.slow.value), fast = Number(el.fast.value);
+    if (![minK,maxK,nozzle,bed,slow,fast].every(Number.isFinite)) throw new Error('Enter valid numbers.');
+    if (minK < 0 || maxK < 0) throw new Error('K values must not be negative.');
+    if (maxK <= minK) throw new Error('Maximum K must be greater than minimum K.');
+    if (slow <= 0 || fast <= slow) throw new Error('Fast speed must be higher than slow speed.');
+    const step = chooseStep(minK, maxK);
+    const rows = Math.floor((maxK - minK) / step + 1e-8) + 1;
+    const values = Array.from({length: rows}, (_, i) => +(minK + i * step).toFixed(6));
+    if (Math.abs(values[values.length-1] - maxK) > 1e-7) values.push(maxK);
+    if (values.length > 101) throw new Error('Range creates too many lines to fit on the bed.');
+    const pitch = values.length === 1 ? 0 : Math.min(10, 300 / (values.length - 1));
+    return {minK,maxK,nozzle,bed,slow,fast,step,values,pitch};
+  }
+
+  function generate(config) {
+    const {minK,maxK,nozzle,bed,slow,fast,step,values,pitch} = config;
+    const x0=20, x1=65, x2=245, x3=290, y0=15, z=0.20;
+    const fSlow=slow*60, fFast=fast*60, fTravel=5000;
+    const lineWidth=0.55, layerHeight=0.20, filamentDia=1.75;
+    const ePerMm=(lineWidth*layerHeight)/(Math.PI*Math.pow(filamentDia/2,2));
+    const ext=d => d*ePerMm;
+    const lines=[];
+    const add = (...parts) => lines.push(...parts);
+
+    add('; ======================================================================',
+      `; Continuous Older Linear Advance Test: K${formatNumber(minK)} to K${formatNumber(maxK)}, Auto Step K${formatNumber(step)}`,
+      '; Ender 5 Plus / E3D Hemera / PETG',
+      '; ======================================================================',
+      '; PRINT DIRECTLY - DO NOT SLICE THIS FILE.',
+      '; One continuous extruded snake line; no retract/travel between test rows.',
+      '; M400 precedes every M900 K change. M900 R0 enables E/D Auto.',
+      `; Bottom row Y${y0.toFixed(2)} = K${formatNumber(values[0])}.`,
+      `; Top row Y${(y0+(values.length-1)*pitch).toFixed(2)} = K${formatNumber(values[values.length-1])}.`,
+      '; Judge only long horizontal slow-fast-slow sections. Ignore connectors.',
+      '; Stop immediately if the Hemera clicks, skips, or makes harsh movements.',
+      ';',
+      `; Nozzle ${nozzle}C / Bed ${bed}C / Slow ${slow}mm/s / Fast ${fast}mm/s`,
+      '; Line 0.55mm x 0.20mm / Pattern X20-290',
+      ';');
+
+    add('; Row guide:');
+    values.forEach((k,i) => add(`; Row ${String(i+1).padStart(3,'0')}  Y${(y0+i*pitch).toFixed(2)}  K${formatNumber(k)}`));
+
+    add('; --- Start G-code ---',
+      'M220 S100 ;Reset Feedrate',
+      'M221 S100 ;Reset Flowrate',
+      'M92 E409 ;Hemera E-steps',
+      'G90 ;Absolute positioning',
+      'M82 ;Extruder absolute mode',
+      `M140 S${bed} ;Start heating bed`,
+      `M190 S${bed} ;Wait for bed`,
+      'G28 ;Home',
+      'M104 S150 ;Standby nozzle preheat after homing',
+      'G29 ;Bed leveling',
+      'G90 ;Ensure absolute positioning',
+      'G92 E0',
+      'G1 Z10 F3000 ;Lift',
+      'G1 X0 Y0 F5000 ;Go to purge corner',
+      'G1 Z0.20 F1200 ;Purge height',
+      `M109 S${nozzle} ;Heat nozzle and wait`,
+      'G4 S2 ;Settle',
+      'M900 R0 ;Set E/D ratio to Auto',
+      'M900 K0 ;Linear Advance off during purge',
+      'M83 ;Relative extrusion',
+      'G1 E5.0 F300 ;Prime nozzle',
+      'G1 E-0.6 F1800 ;Small retract',
+      'G1 E0.6 F1800 ;Undo retract',
+      'G1 X0 Y140 E10 F900 ;First purge line',
+      'G1 X1.0 Y140 F5000 ;Shift sideways',
+      'G1 X1.0 Y20 E10 F900 ;Second purge line',
+      'G1 E-0.6 F1800 ;Retract before test',
+      'G92 E0',
+      '; --- Continuous LA test pattern ---',
+      'M83 ;Relative extrusion',
+      'M204 P800 T1200 ;Adhesion-friendly acceleration',
+      'M205 X6 Y6 ;Gentle jerk',
+      `G1 Z${z.toFixed(2)} F3000`,
+      `G1 X${x0.toFixed(2)} Y${y0.toFixed(2)} F${fTravel} ;Move to test start`,
+      'G1 E0.60 F1800 ;Undo retract',
+      'G92 E0',
+      '; Begin continuous extruded snake');
+
+    values.forEach((k,i) => {
+      const y = y0 + i*pitch;
+      add(`; Row ${String(i+1).padStart(3,'0')}: K${formatNumber(k)} at Y${y.toFixed(2)}`,
+          'M400 ;Complete previous movement before changing K',
+          `M900 K${formatNumber(k)}`);
+      if (i % 2 === 0) {
+        add(`G1 X${x1.toFixed(2)} Y${y.toFixed(2)} E${ext(x1-x0).toFixed(5)} F${fSlow} ;Slow`,
+            `G1 X${x2.toFixed(2)} Y${y.toFixed(2)} E${ext(x2-x1).toFixed(5)} F${fFast} ;Fast`,
+            `G1 X${x3.toFixed(2)} Y${y.toFixed(2)} E${ext(x3-x2).toFixed(5)} F${fSlow} ;Slow`);
+        if (i < values.length-1) add(`G1 X${x3.toFixed(2)} Y${(y+pitch).toFixed(2)} E${ext(pitch).toFixed(5)} F${fSlow} ;Continuous connector`);
+      } else {
+        add(`G1 X${x2.toFixed(2)} Y${y.toFixed(2)} E${ext(x3-x2).toFixed(5)} F${fSlow} ;Slow`,
+            `G1 X${x1.toFixed(2)} Y${y.toFixed(2)} E${ext(x2-x1).toFixed(5)} F${fFast} ;Fast`,
+            `G1 X${x0.toFixed(2)} Y${y.toFixed(2)} E${ext(x1-x0).toFixed(5)} F${fSlow} ;Slow`);
+        if (i < values.length-1) add(`G1 X${x0.toFixed(2)} Y${(y+pitch).toFixed(2)} E${ext(pitch).toFixed(5)} F${fSlow} ;Continuous connector`);
+      }
+    });
+
+    add('G1 E-0.60 F1800 ;Retract after entire pattern',
+        'M400 ;Finish pattern',
+        'M900 R0 ;Leave E/D Auto',
+        'M900 K0 ;Disable LA after test until chosen value is set',
+        '; --- End G-code ---',
+        'M83 ;Relative extrusion for end retract',
+        'G91 ;Relative positioning',
+        'G1 E-2 F2700 ;Retract',
+        'G1 E-2 Z0.2 F2400 ;Retract and lift',
+        'G1 X5 Y5 F3000 ;Wipe',
+        'G1 Z10 F3000 ;Raise Z',
+        'G90 ;Absolute positioning',
+        'G28 X Y ;Present print',
+        'M106 S0 ;Fan off',
+        'M104 S0 ;Hotend off',
+        'M140 S0 ;Bed off',
+        'M84 X Y E ;Disable steppers except Z',
+        '; End of file');
+
+    let text = lines.join('\n') + '\n';
+    const minutes = estimateMotionMinutes(text);
+    text = `; Filename duration estimates movement/dwell only: ${minutes.toFixed(2)} minutes.\n; Heating, homing and G29 probing are variable and excluded.\n` + text;
+    return {text, minutes};
+  }
+
+  function estimateMotionMinutes(text) {
+    let x=0,y=0,z=0,e=0, absXYZ=true, absE=true, feed=null, seconds=0;
+    for (let raw of text.split(/\r?\n/)) {
+      const line = raw.split(';')[0].trim().toUpperCase();
+      if (!line) continue;
+      if (/^G90\b/.test(line)) { absXYZ=true; continue; }
+      if (/^G91\b/.test(line)) { absXYZ=false; continue; }
+      if (/^M82\b/.test(line)) { absE=true; continue; }
+      if (/^M83\b/.test(line)) { absE=false; continue; }
+      if (/^G92\b/.test(line)) {
+        for (const m of line.matchAll(/([XYZE])\s*(-?\d+(?:\.\d+)?)/g)) {
+          const v=+m[2]; if(m[1]==='X')x=v; if(m[1]==='Y')y=v; if(m[1]==='Z')z=v; if(m[1]==='E')e=v;
+        }
+        continue;
+      }
+      if (/^G4\b/.test(line)) {
+        const sm=line.match(/\bS\s*(-?\d+(?:\.\d+)?)/); const pm=line.match(/\bP\s*(-?\d+(?:\.\d+)?)/);
+        seconds += sm ? +sm[1] : pm ? +pm[1]/1000 : 0; continue;
+      }
+      if (/^G0?\b/.test(line) || /^G1\b/.test(line)) {
+        const vals={};
+        for (const m of line.matchAll(/([XYZEF])\s*(-?\d+(?:\.\d+)?)/g)) vals[m[1]]=+m[2];
+        if ('F' in vals) feed=vals.F;
+        const nx=('X' in vals) ? (absXYZ?vals.X:x+vals.X) : x;
+        const ny=('Y' in vals) ? (absXYZ?vals.Y:y+vals.Y) : y;
+        const nz=('Z' in vals) ? (absXYZ?vals.Z:z+vals.Z) : z;
+        const ne=('E' in vals) ? (absE?vals.E:e+vals.E) : e;
+        const xyz=Math.hypot(nx-x,ny-y,nz-z);
+        const dist=xyz || Math.abs(ne-e);
+        if(feed && dist) seconds += dist/(feed/60);
+        [x,y,z,e]=[nx,ny,nz,ne];
+      }
+    }
+    return seconds/60;
+  }
+
+  function timeFilename(minutes) {
+    const rounded=Math.round(minutes);
+    return `${String(Math.floor(rounded/60)).padStart(2,'0')}_${String(rounded%60).padStart(2,'0')}.gcode`;
+  }
+
+  function draw(config) {
+    const canvas=el.preview, ctx=canvas.getContext('2d');
+    const {values,pitch} = config, y0=15;
+    const pad=34, bedW=309, bedH=331;
+    const sx=(canvas.width-pad*2)/bedW, sy=(canvas.height-pad*2)/bedH;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#081019'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle='#263748'; ctx.lineWidth=2;
+    ctx.strokeRect(pad,pad,bedW*sx,bedH*sy);
+    ctx.fillStyle='#7991a8'; ctx.font='13px Segoe UI, Arial';
+    ctx.fillText('X 0',pad,pad-10); ctx.fillText('X 309',pad+bedW*sx-38,pad-10);
+    ctx.save();
+    ctx.translate(pad,pad+bedH*sy);
+    ctx.scale(sx,-sy);
+    ctx.lineWidth=1.0/sx;
+    values.forEach((k,i)=>{
+      const y=y0+i*pitch;
+      const t=(k-config.minK)/(config.maxK-config.minK || 1);
+      const hue=210-(190*t);
+      ctx.strokeStyle=`hsl(${hue},85%,62%)`;
+      ctx.beginPath();
+      if(i%2===0){ctx.moveTo(20,y);ctx.lineTo(290,y); if(i<values.length-1)ctx.lineTo(290,y+pitch);}
+      else {ctx.moveTo(290,y);ctx.lineTo(20,y); if(i<values.length-1)ctx.lineTo(20,y+pitch);}
+      ctx.stroke();
+    });
+    ctx.restore();
+    ctx.fillStyle='#91a6ba'; ctx.fillText(`Bottom: K${formatNumber(values[0])}`,pad,pad+bedH*sy+21);
+    ctx.fillText(`Top: K${formatNumber(values[values.length-1])}`,pad+150,pad+bedH*sy+21);
+  }
+
+  function guideText(config) {
+    const y0=15;
+    return config.values.map((k,i)=>`Row ${String(i+1).padStart(3,'0')}  Y${(y0+i*config.pitch).toFixed(2)}  K${formatNumber(k)}`).join('\n');
+  }
+
+  function refresh() {
+    try {
+      const config=settings();
+      const result=generate(config);
+      const filename=timeFilename(result.minutes);
+      el.error.textContent='';
+      el.step.textContent=`K${formatNumber(config.step)}`;
+      el.rows.textContent=config.values.length;
+      el.time.textContent=timeFilename(result.minutes).replace('.gcode','').replace('_',':');
+      el.file.textContent=filename;
+      el.mapping.innerHTML=config.values.map((k,i)=>
+        `<div class="map-row"><span>Row ${String(i+1).padStart(3,'0')} · Y${(15+i*config.pitch).toFixed(1)}</span><strong>K${formatNumber(k)}</strong></div>`
+      ).join('');
+      el.summary.textContent=`Bottom row is K${formatNumber(config.values[0])}; top row is K${formatNumber(config.values[config.values.length-1])}. Rows are ${config.pitch.toFixed(2)} mm apart. Judge only the horizontal slow → fast → slow sections.`;
+      draw(config);
+      return {config,result,filename};
+    } catch(err) {
+      el.error.textContent=err.message;
+      return null;
+    }
+  }
+
+  ['minK','maxK','nozzle','bed','slow','fast'].forEach(id => $(id).addEventListener('input', refresh));
+
+  $('download').addEventListener('click', () => {
+    const data=refresh(); if(!data) return;
+    const blob=new Blob([data.result.text],{type:'text/plain;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=data.filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  });
+
+  $('copyGuide').addEventListener('click', async () => {
+    const data=refresh(); if(!data) return;
+    try { await navigator.clipboard.writeText(guideText(data.config)); $('copyGuide').textContent='Copied'; setTimeout(()=>$('copyGuide').textContent='Copy row guide',1000); }
+    catch { alert(guideText(data.config)); }
+  });
+
+  $('showGcode').addEventListener('click', () => {
+    const data=refresh(); if(!data) return;
+    const win=window.open('','_blank');
+    win.document.write('<pre style="white-space:pre-wrap;font:13px monospace;padding:18px;">'+data.result.text.replaceAll('&','&amp;').replaceAll('<','&lt;')+'</pre>');
+    win.document.close();
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>
