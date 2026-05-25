@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Older Marlin Linear Advance G-code Generator — Safe Revised Edition</title>
+<title>Older Marlin Linear Advance G-code Generator — Fan PWM Edition</title>
 <style>
 :root{
   --bg:#0b1016; --panel:#121a23; --panel2:#192431; --line:#263547;
@@ -136,6 +136,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
           <div><label for="layerHeight">Layer height mm</label><input id="layerHeight" type="number" value="0.20" step="0.01" min="0.04"></div>
           <div><label for="filamentDia">Filament diameter mm</label><input id="filamentDia" type="number" value="1.75" step="0.01" min="1"></div>
           <div><label for="flow">Flow %</label><input id="flow" type="number" value="100" step="1" min="1"></div>
+          <div><label for="fanPercent">Part cooling fan %</label><input id="fanPercent" type="number" value="0" step="1" min="0" max="100"></div>
         </div>
       </details>
       <details>
@@ -191,11 +192,11 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const fields = ['minK','maxK','stepMode','manualStep','compatibility','nozzle','bed','slow','fast','lineWidth','layerHeight','filamentDia','flow','levelBed','overrideESteps','eSteps','forceMotion','accel','jerk','chosenK'];
+  const fields = ['minK','maxK','stepMode','manualStep','compatibility','nozzle','bed','slow','fast','lineWidth','layerHeight','filamentDia','flow','fanPercent','levelBed','overrideESteps','eSteps','forceMotion','accel','jerk','chosenK'];
   const defaults = {
     minK:'20', maxK:'50', stepMode:'auto', manualStep:'1', compatibility:'legacy',
     nozzle:'245', bed:'85', slow:'15', fast:'60', lineWidth:'0.55', layerHeight:'0.20',
-    filamentDia:'1.75', flow:'100', levelBed:true, overrideESteps:false, eSteps:'409',
+    filamentDia:'1.75', flow:'100', fanPercent:'0', levelBed:true, overrideESteps:false, eSteps:'409',
     forceMotion:false, accel:'800', jerk:'6', chosenK:'35'
   };
   const BED = {x:350, y:350};
@@ -258,9 +259,11 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     const slow = value('slow', 'slow speed'), fast = value('fast', 'fast speed');
     const lineWidth = value('lineWidth', 'line width'), layerHeight = value('layerHeight', 'layer height');
     const filamentDia = value('filamentDia', 'filament diameter'), flow = value('flow', 'flow percentage');
+    const fanPercent = value('fanPercent', 'part cooling fan percentage');
     if (nozzle <= 0 || bed < 0) throw new Error('Temperatures must be valid positive values.');
     if (slow <= 0 || fast <= slow) throw new Error('Fast speed must be higher than slow speed.');
     if (lineWidth <= 0 || layerHeight <= 0 || filamentDia <= 0 || flow <= 0) throw new Error('Line, filament, and flow values must be greater than zero.');
+    if (fanPercent < 0 || fanPercent > 100) throw new Error('Part cooling fan percentage must be from 0 to 100.');
     if (layerHeight > lineWidth) throw new Error('Layer height must not exceed line width for this line test.');
     const overrideESteps = $('overrideESteps').checked;
     const forceMotion = $('forceMotion').checked;
@@ -273,7 +276,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     const filamentArea = Math.PI * Math.pow(filamentDia / 2, 2);
     const ePerMm = lineArea / filamentArea;
     const maxFlow = lineArea * fast;
-    return {minK,maxK,step,manual,values,pitch,nozzle,bed,slow,fast,lineWidth,layerHeight,filamentDia,flow,
+    const fanPwm = Math.round(fanPercent * 255 / 100);
+    return {minK,maxK,step,manual,values,pitch,nozzle,bed,slow,fast,lineWidth,layerHeight,filamentDia,flow,fanPercent,fanPwm,
       lineArea,filamentArea,ePerMm,maxFlow,levelBed:$('levelBed').checked,overrideESteps,eSteps,forceMotion,accel,jerk,
       compatibility:$('compatibility').value};
   }
@@ -284,6 +288,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     if (c.maxFlow > 10) out.push(`Maximum nominal flow is ${c.maxFlow.toFixed(2)} mm³/s; verify your PETG can extrude cleanly at this rate.`);
     if (c.nozzle > 270) out.push('The selected nozzle temperature is unusually high for PETG; verify the filament and firmware temperature limits.');
     if (c.bed > 100) out.push('The selected bed temperature is unusually high for PETG/glass; verify your build surface limits.');
+    if (c.fanPercent > 50) out.push('High part cooling can reduce PETG layer bonding; use it only if needed for this line test.');
     if (c.overrideESteps) out.push(`This G-code will temporarily command M92 E${formatNumber(c.eSteps)}.`);
     if (c.forceMotion) out.push('M204/M205 overrides remain active after this test until changed, power-cycled, or settings are reloaded.');
     const lastIncrement = c.values.length > 1 ? round6(c.values[c.values.length-1] - c.values[c.values.length-2]) : c.step;
@@ -309,6 +314,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       ';',
       `; Nozzle ${c.nozzle}C / Bed ${c.bed}C / Slow ${c.slow}mm/s / Fast ${c.fast}mm/s`,
       `; Line ${formatNumber(c.lineWidth)}mm x ${formatNumber(c.layerHeight)}mm / Flow ${formatNumber(c.flow)}% / Filament ${formatNumber(c.filamentDia)}mm`,
+      `; Part cooling fan: ${formatNumber(c.fanPercent)}% (M106 S${c.fanPwm})`,
       `; Maximum nominal volumetric flow: ${c.maxFlow.toFixed(2)} mm^3/s`,
       `; Pattern X${P.x0}-${P.x3}; safe inside ${BED.x} x ${BED.y} mm bed`,
       ';');
@@ -330,7 +336,8 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       'G1 X0 Y0 F5000 ;Go to purge corner',
       `G1 Z${P.z.toFixed(2)} F1200 ;Purge height`,
       `M109 S${formatNumber(c.nozzle)} ;Heat nozzle and wait`,
-      'G4 S2 ;Allow pressure and temperature to settle',
+      `M106 S${c.fanPwm} ;Part cooling fan ${formatNumber(c.fanPercent)}% (PWM 0-255)`,
+      'G4 S2 ;Allow pressure, temperature, and fan to settle',
       'G92 E0');
     if (c.compatibility === 'legacy') add('M900 R0 ;Older Linear Advance: set E/D ratio to Auto');
     add('M900 K0 ;Disable Linear Advance during purge',
@@ -374,7 +381,7 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
       'G91 ;Relative XYZ positioning',
       'G1 Z10 F3000 ;Raise nozzle safely above test lines',
       'G90 ;Absolute XYZ positioning',
-      'M106 S0 ;Part cooling fan off',
+      'M107 ;Part cooling fan off',
       'M104 S0 ;Hotend off',
       'M140 S0 ;Bed off',
       'M84 X Y E ;Disable X/Y/E steppers; keep Z held',
@@ -436,9 +443,9 @@ textarea{flex:1;width:100%;resize:none;background:#080e15;border:1px solid #2433
     return positive;
   }
   function filename(minutes) {
-    const seconds = Math.max(1, Math.round(minutes * 60));
-    const hh = Math.floor(seconds / 3600), mm = Math.floor((seconds % 3600) / 60), ss = seconds % 60;
-    return `${String(hh).padStart(2,'0')}_${String(mm).padStart(2,'0')}_${String(ss).padStart(2,'0')}.gcode`;
+    const roundedMinutes = Math.max(1, Math.round(minutes));
+    const hh = Math.floor(roundedMinutes / 60), mm = roundedMinutes % 60;
+    return `${String(hh).padStart(2,'0')}_${String(mm).padStart(2,'0')}.gcode`;
   }
   function humanTime(minutes) {
     const seconds = Math.max(1, Math.round(minutes * 60));
